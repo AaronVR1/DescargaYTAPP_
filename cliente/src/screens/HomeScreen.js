@@ -11,7 +11,7 @@ import {
   Image
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import * as FileSystem from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import { getVideoInfo, getDownloadLinks, isValidYouTubeUrl } from '../api/youtubeApi';
 import { saveDownloadHistory } from '../utils/storage';
@@ -71,7 +71,7 @@ export default function HomeScreen() {
         .replace(/[^a-z0-9]/gi, '_')
         .substring(0, 50);
       
-      const fileUri = FileSystem.documentDirectory + `${sanitizedTitle}.mp4`;
+      const fileUri = `${FileSystem.documentDirectory || 'file://'}${sanitizedTitle}.mp4`;
 
       console.log('💾 Guardando en:', fileUri);
 

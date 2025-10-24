@@ -96,29 +96,52 @@ exports.downloadVideo = async (req, res) => {
     // Obtener info con yt-dlp
     const info = await ytDlpWrap.getVideoInfo(url);
 
-    // Filtrar formatos con video y audio (excluir HLS/DASH)
-    const videoFormats = info.formats.filter(f =>
-      f.vcodec !== 'none' &&
-      f.acodec !== 'none' &&
-      f.url &&
-      f.protocol !== 'http_dash_segments' &&
-      f.protocol !== 'm3u8' &&
-      f.protocol !== 'm3u8_native' &&
-      !f.url.includes('manifest') &&
-      !f.url.includes('googlevideo')
+// Primero: Buscar formatos con video Y audio juntos
+let videoFormats = info.formats.filter(f => 
+  f.vcodec !== 'none' && 
+  f.acodec !== 'none' &&
+  f.url &&
+  !f.url.includes('manifest')
+);
+
+console.log(`📊 Formatos con video+audio: ${videoFormats.length}`);
+
+// Si encontramos formatos combinados, usarlos
+if (videoFormats.length > 0) {
+  // Ordenar por calidad (altura)
+  videoFormats.sort((a, b) => (b.height || 0) - (a.height || 0));
+  
+  // Filtrar solo los que tienen buena calidad y audio
+  const goodFormats = videoFormats.filter(f => 
+    (f.height >= 480 || f.qualityLabel) && 
+    f.acodec !== 'none'
+  );
+  
+  if (goodFormats.length > 0) {
+    videoFormats = goodFormats;
+    console.log(`✅ Usando formatos combinados de calidad: ${videoFormats[0].height || videoFormats[0].quality}p`);
+  }
+} else {
+  // Si NO hay formatos combinados, buscar los mejores formatos con audio
+  console.log('⚠️ No hay formatos combinados, buscando alternativas...');
+  
+  // Buscar formatos que tengan audio (aunque sea de menor calidad de video)
+  const formatsWithAudio = info.formats.filter(f => 
+    f.acodec !== 'none' &&
+    f.url &&
+    !f.url.includes('manifest')
+  );
+  
+  if (formatsWithAudio.length > 0) {
+    videoFormats = formatsWithAudio;
+    videoFormats.sort((a, b) => (b.height || 0) - (a.height || 0));
+    console.log(`✅ Usando formato con audio: ${videoFormats[0].height || videoFormats[0].quality}p`);
+  } else {
+    // Último recurso: cualquier formato descargable
+    videoFormats = info.formats.filter(f => 
+      f.url && !f.url.includes('manifest')
     );
-
-    // Si no hay formatos con ambos, buscar formatos separados
-    if (videoFormats.length === 0) {
-      console.log('⚠️ No hay formatos combinados, buscando video solo...');
-      const videoOnly = info.formats.filter(f =>
-        f.vcodec !== 'none' &&
-        f.url &&
-        !f.url.includes('manifest')
-      );
-
-  if (videoOnly.length > 0) {
-    videoFormats.push(...videoOnly);
+    console.log('⚠️ Usando cualquier formato disponible (puede no tener audio)');
   }
 }
 
