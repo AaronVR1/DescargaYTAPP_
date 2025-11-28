@@ -29,7 +29,7 @@ export default function AppNavigator() {
         tabBarActiveTintColor: '#2563eb',
         tabBarInactiveTintColor: 'gray',
         headerStyle: {
-          backgroundColor: '#2563eb',
+          backgroundColor: '#8b5cf6',
         },
         headerTintColor: '#fff',
         headerTitleStyle: {
@@ -40,17 +40,17 @@ export default function AppNavigator() {
       <Tab.Screen 
         name="Home" 
         component={HomeScreen}
-        options={{ title: 'YouTube Downloader' }}
+        options={{ title: 'INICIO' }}
       />
       <Tab.Screen 
         name="Downloads" 
         component={DownloadsScreen}
-        options={{ title: 'Mis Descargas' }}
+        options={{ title: 'MIS DESCARGAS' }}
       />
       <Tab.Screen 
         name="Settings" 
         component={SettingsScreen}
-        options={{ title: 'Configuración' }}
+        options={{ title: 'AJUSTES' }}
       />
     </Tab.Navigator>
   );

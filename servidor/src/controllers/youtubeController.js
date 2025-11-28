@@ -1,36 +1,92 @@
-const YTDlpWrap = require('yt-dlp-wrap').default;
+const { execFile } = require('child_process');
+const { promisify } = require('util');
 const path = require('path');
+const fs = require('fs');
+const https = require('https');
+const http = require('http');
 
-// Inicializar yt-dlp con ruta específica
+const execFileAsync = promisify(execFile);
+
 const ytDlpPath = path.join(__dirname, '../../bin/yt-dlp.exe');
-const ytDlpWrap = new YTDlpWrap(ytDlpPath);
+const ffmpegPath = path.join(__dirname, '../../bin/ffmpeg.exe');
+const tempDir = path.join(__dirname, '../../temp');
 
-const getVideoId = (url) => {
-  const regex = /(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/;
-  const match = url.match(regex);
-  return match ? match[1] : null;
-};
+function getVideoId(url) {
+  const patterns = [
+    /youtube\.com\/watch\?v=([a-zA-Z0-9_-]{11})/,
+    /youtu\.be\/([a-zA-Z0-9_-]{11})/,
+    /youtube\.com\/shorts\/([a-zA-Z0-9_-]{11})/
+  ];
 
-const formatDuration = (seconds) => {
-  const hrs = Math.floor(seconds / 3600);
-  const mins = Math.floor((seconds % 3600) / 60);
-  const secs = seconds % 60;
-  
-  if (hrs > 0) {
-    return `${hrs}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+  for (const pattern of patterns) {
+    const match = url.match(pattern);
+    if (match) return match[1];
   }
-  return `${mins}:${secs.toString().padStart(2, '0')}`;
-};
+  return null;
+}
+
+function cleanupOldFiles() {
+  try {
+    const files = fs.readdirSync(tempDir);
+    const now = Date.now();
+    
+    files.forEach(file => {
+      const filePath = path.join(tempDir, file);
+      const stats = fs.statSync(filePath);
+      const ageInHours = (now - stats.mtimeMs) / (1000 * 60 * 60);
+      
+      if (ageInHours > 1) {
+        fs.unlinkSync(filePath);
+        console.log('🧹 Archivo viejo eliminado:', file);
+      }
+    });
+  } catch (e) {
+    console.log('⚠️ Error al limpiar archivos:', e.message);
+  }
+}
+
+function waitForFile(filePath, timeout = 60000) {
+  return new Promise((resolve) => {
+    const startTime = Date.now();
+    const checkInterval = setInterval(() => {
+      if (fs.existsSync(filePath)) {
+        clearInterval(checkInterval);
+        resolve(filePath);
+      } else if (Date.now() - startTime > timeout) {
+        clearInterval(checkInterval);
+        resolve(null);
+      }
+    }, 500);
+  });
+}
+
+function downloadImage(url, filePath) {
+  return new Promise((resolve, reject) => {
+    const protocol = url.startsWith('https') ? https : http;
+    const file = fs.createWriteStream(filePath);
+
+    protocol.get(url, (response) => {
+      response.pipe(file);
+      file.on('finish', () => {
+        file.close();
+        resolve(filePath);
+      });
+    }).on('error', (err) => {
+      fs.unlink(filePath, () => {});
+      reject(err);
+    });
+  });
+}
 
 exports.getVideoInfo = async (req, res) => {
   try {
-    const { url } = req.body;
-
-    console.log('📥 Petición de info recibida:', url);
-
+    const url = req.query.url;
+    
     if (!url) {
       return res.status(400).json({ error: 'URL es requerida' });
     }
+
+    console.log('📥 Petición de info recibida:', url);
 
     const videoId = getVideoId(url);
     if (!videoId) {
@@ -39,48 +95,37 @@ exports.getVideoInfo = async (req, res) => {
 
     console.log('🔍 Obteniendo info del video ID:', videoId);
 
-    // Obtener info con yt-dlp
-    const info = await ytDlpWrap.getVideoInfo(url);
+    const { stdout } = await execFileAsync(ytDlpPath, [
+      '-j',
+      '--no-warnings',
+      url
+    ], { maxBuffer: 10 * 1024 * 1024 });
+
+    const videoData = JSON.parse(stdout);
+
+    const info = {
+      title: videoData.title || 'Desconocido',
+      duration: videoData.duration ? `${Math.floor(videoData.duration / 60)}:${String(videoData.duration % 60).padStart(2, '0')}` : 'N/A',
+      views: videoData.view_count ? `${(videoData.view_count / 1000000).toFixed(1)}M` : 'N/A',
+      channel: videoData.uploader || 'Desconocido',
+      thumbnail: videoData.thumbnail || '',
+      description: videoData.description || ''
+    };
 
     console.log('✅ Info obtenida:', info.title);
-
-    // Obtener formatos disponibles
-    const formats = info.formats
-      .filter(f => f.vcodec !== 'none' && f.acodec !== 'none')
-      .map(f => ({
-        quality: f.format_note || f.height + 'p' || 'unknown',
-        format: f.ext,
-        size: f.filesize ? `${(f.filesize / (1024 * 1024)).toFixed(2)} MB` : 'N/A'
-      }))
-      .slice(0, 5); // Solo las primeras 5
-
-    res.json({
-      success: true,
-      data: {
-        title: info.title,
-        duration: formatDuration(parseInt(info.duration)),
-        thumbnail: info.thumbnail,
-        channel: info.uploader || info.channel,
-        views: parseInt(info.view_count || 0).toLocaleString(),
-        uploadDate: info.upload_date,
-        formats: formats
-      }
-    });
+    res.json(info);
 
   } catch (error) {
-    console.error('❌ Error al obtener info:', error.message);
-    res.status(500).json({ 
-      error: 'Error al obtener información del video',
-      message: error.message 
-    });
+    console.error('❌ Error:', error.message);
+    res.status(500).json({ error: 'Error al obtener información', message: error.message });
   }
 };
 
 exports.downloadVideo = async (req, res) => {
-  try {
-    const { url, quality = 'high' } = req.body;
+  let outputPath = null;
 
-    console.log('📥 Petición de descarga recibida:', { url, quality });
+  try {
+    const url = req.query.url;
 
     if (!url) {
       return res.status(400).json({ error: 'URL es requerida' });
@@ -88,101 +133,80 @@ exports.downloadVideo = async (req, res) => {
 
     const videoId = getVideoId(url);
     if (!videoId) {
-      return res.status(400).json({ error: 'URL de YouTube inválida' });
+      return res.status(400).json({ error: 'URL inválida' });
     }
 
-    console.log('🔍 Obteniendo formatos del video ID:', videoId);
+    cleanupOldFiles();
 
-    // Obtener info con yt-dlp
-    const info = await ytDlpWrap.getVideoInfo(url);
+    const timestamp = Date.now();
+    const outputFile = path.join(tempDir, `video_${videoId}_${timestamp}.mp4`);
 
-// Primero: Buscar formatos con video Y audio juntos
-let videoFormats = info.formats.filter(f => 
-  f.vcodec !== 'none' && 
-  f.acodec !== 'none' &&
-  f.url &&
-  !f.url.includes('manifest')
-);
+    console.log('⏳ Descargando video en MP4...');
 
-console.log(`📊 Formatos con video+audio: ${videoFormats.length}`);
+    await execFileAsync(ytDlpPath, [
+      '-f', 'best[vcodec^=avc1]/best[vcodec^=h264]/best',
+      url,
+      '-o', outputFile,
+      '-R', '3',
+      '--no-warnings'
+    ], {
+      maxBuffer: 100 * 1024 * 1024,
+      timeout: 1800000
+    });
 
-// Si encontramos formatos combinados, usarlos
-if (videoFormats.length > 0) {
-  // Ordenar por calidad (altura)
-  videoFormats.sort((a, b) => (b.height || 0) - (a.height || 0));
-  
-  // Filtrar solo los que tienen buena calidad y audio
-  const goodFormats = videoFormats.filter(f => 
-    (f.height >= 480 || f.qualityLabel) && 
-    f.acodec !== 'none'
-  );
-  
-  if (goodFormats.length > 0) {
-    videoFormats = goodFormats;
-    console.log(`✅ Usando formatos combinados de calidad: ${videoFormats[0].height || videoFormats[0].quality}p`);
-  }
-} else {
-  // Si NO hay formatos combinados, buscar los mejores formatos con audio
-  console.log('⚠️ No hay formatos combinados, buscando alternativas...');
-  
-  // Buscar formatos que tengan audio (aunque sea de menor calidad de video)
-  const formatsWithAudio = info.formats.filter(f => 
-    f.acodec !== 'none' &&
-    f.url &&
-    !f.url.includes('manifest')
-  );
-  
-  if (formatsWithAudio.length > 0) {
-    videoFormats = formatsWithAudio;
-    videoFormats.sort((a, b) => (b.height || 0) - (a.height || 0));
-    console.log(`✅ Usando formato con audio: ${videoFormats[0].height || videoFormats[0].quality}p`);
-  } else {
-    // Último recurso: cualquier formato descargable
-    videoFormats = info.formats.filter(f => 
-      f.url && !f.url.includes('manifest')
-    );
-    console.log('⚠️ Usando cualquier formato disponible (puede no tener audio)');
-  }
-}
+    const fileExists = await waitForFile(outputFile, 120000);
 
-    if (videoFormats.length === 0) {
-      console.log('❌ No se encontró formato disponible');
-      return res.status(404).json({ error: 'No se encontró formato disponible' });
+    if (!fileExists || !fs.existsSync(outputFile)) {
+      return res.status(500).json({ error: 'Error: No se pudo crear el archivo' });
     }
 
-    // Ordenar por calidad (altura)
-    videoFormats.sort((a, b) => (b.height || 0) - (a.height || 0));
+    const fileSize = fs.statSync(outputFile).size;
+    console.log(`✅ Video listo: ${(fileSize / (1024 * 1024)).toFixed(2)} MB`);
 
-    // Seleccionar formato según calidad
-    const format = quality === 'high' ? videoFormats[0] : videoFormats[videoFormats.length - 1];
+    if (fileSize < 500000) {
+      fs.unlinkSync(outputFile);
+      return res.status(500).json({ error: 'Error: Archivo muy pequeño' });
+    }
 
-    console.log('✅ Formato encontrado:', format.format_note || format.height + 'p');
-    console.log('🔗 URL del video:', format.url.substring(0, 100) + '...');
+    outputPath = outputFile;
 
-    res.json({
-      success: true,
-      data: {
-        link: format.url,
-        quality: format.format_note || (format.height ? format.height + 'p' : 'unknown'),
-        size: format.filesize ? `${(format.filesize / (1024 * 1024)).toFixed(2)} MB` : 'N/A',
-        format: format.ext
+    console.log('📤 Enviando archivo al cliente...');
+
+    res.download(outputFile, `video_${videoId}.mp4`, (err) => {
+      if (err) {
+        console.error('❌ Error al enviar:', err.message);
+      } else {
+        console.log('✅ Enviado exitosamente');
       }
+
+      setTimeout(() => {
+        try {
+          if (outputPath && fs.existsSync(outputPath)) {
+            fs.unlinkSync(outputPath);
+            console.log('🧹 Temporal eliminado');
+          }
+        } catch (e) {}
+      }, 5000);
     });
 
   } catch (error) {
-    console.error('❌ Error al descargar video:', error.message);
-    res.status(500).json({ 
-      error: 'Error al procesar la descarga',
-      message: error.message 
-    });
+    console.error('❌ Error:', error.message);
+    if (outputPath && fs.existsSync(outputPath)) {
+      try {
+        fs.unlinkSync(outputPath);
+      } catch (e) {}
+    }
+    res.status(500).json({ error: 'Error al procesar', message: error.message });
   }
 };
 
 exports.downloadAudio = async (req, res) => {
-  try {
-    const { url } = req.body;
+  let outputPath = null;
+  let tempMp3 = null;
+  let coverImage = null;
 
-    console.log('📥 Petición de audio recibida:', url);
+  try {
+    const url = req.query.url;
 
     if (!url) {
       return res.status(400).json({ error: 'URL es requerida' });
@@ -190,47 +214,146 @@ exports.downloadAudio = async (req, res) => {
 
     const videoId = getVideoId(url);
     if (!videoId) {
-      return res.status(400).json({ error: 'URL de YouTube inválida' });
+      return res.status(400).json({ error: 'URL inválida' });
     }
 
-    console.log('🔍 Obteniendo audio del video ID:', videoId);
+    cleanupOldFiles();
 
-    // Obtener info con yt-dlp
-    const info = await ytDlpWrap.getVideoInfo(url);
+    const timestamp = Date.now();
+    tempMp3 = path.join(tempDir, `audio_temp_${videoId}_${timestamp}.mp3`);
+    coverImage = path.join(tempDir, `cover_${videoId}_${timestamp}.jpg`);
+    const mp3File = path.join(tempDir, `audio_${videoId}_${timestamp}.mp3`);
 
-    // Filtrar solo formatos de audio
-    const audioFormats = info.formats.filter(f => 
-      f.acodec !== 'none' && 
-      f.vcodec === 'none' &&
-      f.url
-    );
+    console.log('🎵 Descargando audio 320kbps...');
 
-    if (audioFormats.length === 0) {
-      console.log('❌ No se encontró formato de audio disponible');
-      return res.status(404).json({ error: 'No se encontró formato de audio disponible' });
+    // Descargar audio sin portada primero
+    await execFileAsync(ytDlpPath, [
+      '-f', 'bestaudio/best',
+      '-x',
+      '--audio-format', 'mp3',
+      '--audio-quality', '320K',
+      '--ffmpeg-location', ffmpegPath,
+      url,
+      '-o', tempMp3,
+      '--no-warnings'
+    ], {
+      maxBuffer: 100 * 1024 * 1024,
+      timeout: 3600000
+    });
+
+    console.log('⏳ Verificando archivo de audio...');
+
+    const audioFileExists = await waitForFile(tempMp3, 120000);
+    if (!audioFileExists) {
+      return res.status(500).json({ error: 'Error: No se pudo descargar el audio' });
     }
 
-    // Seleccionar el mejor audio (por abr - audio bitrate)
-    audioFormats.sort((a, b) => (b.abr || 0) - (a.abr || 0));
-    const format = audioFormats[0];
+    if (!fs.existsSync(tempMp3)) {
+      return res.status(500).json({ error: 'Error: Archivo de audio no existe' });
+    }
 
-    console.log('✅ Audio encontrado');
+    const fileSize = fs.statSync(tempMp3).size;
+    console.log(`✅ Audio descargado: ${(fileSize / (1024 * 1024)).toFixed(2)} MB`);
 
-    res.json({
-      success: true,
-      data: {
-        link: format.url,
-        bitrate: format.abr ? `${format.abr} kbps` : 'N/A',
-        size: format.filesize ? `${(format.filesize / (1024 * 1024)).toFixed(2)} MB` : 'N/A',
-        format: 'audio'
+    if (fileSize < 500000) {
+      fs.unlinkSync(tempMp3);
+      return res.status(500).json({ error: 'Error: Archivo muy pequeño' });
+    }
+
+    // Obtener información del video para conseguir la portada
+    console.log('🖼️ Descargando portada...');
+    const { stdout } = await execFileAsync(ytDlpPath, [
+      '-j',
+      '--no-warnings',
+      url
+    ], { maxBuffer: 10 * 1024 * 1024 });
+
+    const videoData = JSON.parse(stdout);
+    const thumbnailUrl = videoData.thumbnail;
+    const title = videoData.title || 'Desconocido';
+    const artist = videoData.uploader || 'Desconocido';
+
+    if (thumbnailUrl) {
+      try {
+        await downloadImage(thumbnailUrl, coverImage);
+        console.log('✅ Portada descargada');
+
+        // Incrustar portada en el MP3 con FFmpeg
+        console.log('🎨 Incrustando portada en MP3...');
+        await execFileAsync(ffmpegPath, [
+          '-i', tempMp3,
+          '-i', coverImage,
+          '-c', 'copy',
+          '-map', '0',
+          '-map', '1',
+          '-metadata:s:v', 'title="Album cover"',
+          '-metadata:s:v', 'comment="Cover"',
+          '-metadata', `title=${title}`,
+          '-metadata', `artist=${artist}`,
+          '-y',
+          mp3File
+        ], {
+          maxBuffer: 100 * 1024 * 1024,
+          timeout: 600000
+        });
+
+        console.log('✅ Portada incrustada exitosamente');
+      } catch (e) {
+        console.log('⚠️ Error al incrustar portada, usando MP3 sin portada:', e.message);
+        fs.copyFileSync(tempMp3, mp3File);
       }
+    } else {
+      console.log('⚠️ No se encontró portada, usando MP3 sin portada');
+      fs.copyFileSync(tempMp3, mp3File);
+    }
+
+    if (!fs.existsSync(mp3File)) {
+      return res.status(500).json({ error: 'Error: No se pudo procesar el audio' });
+    }
+
+    const finalSize = fs.statSync(mp3File).size;
+    console.log(`✅ Audio final listo: ${(finalSize / (1024 * 1024)).toFixed(2)} MB`);
+
+    outputPath = mp3File;
+
+    console.log('📤 Enviando audio al cliente...');
+
+    res.download(mp3File, `audio_${videoId}.mp3`, (err) => {
+      if (err) {
+        console.error('❌ Error al enviar:', err.message);
+      } else {
+        console.log('✅ Enviado exitosamente');
+      }
+
+      setTimeout(() => {
+        try {
+          if (tempMp3 && fs.existsSync(tempMp3)) {
+            fs.unlinkSync(tempMp3);
+          }
+          if (coverImage && fs.existsSync(coverImage)) {
+            fs.unlinkSync(coverImage);
+          }
+          if (outputPath && fs.existsSync(outputPath)) {
+            fs.unlinkSync(outputPath);
+            console.log('🧹 Temporales eliminados');
+          }
+        } catch (e) {}
+      }, 5000);
     });
 
   } catch (error) {
-    console.error('❌ Error al descargar audio:', error.message);
-    res.status(500).json({ 
-      error: 'Error al procesar la descarga de audio',
-      message: error.message 
-    });
+    console.error('❌ Error:', error.message);
+    try {
+      if (tempMp3 && fs.existsSync(tempMp3)) {
+        fs.unlinkSync(tempMp3);
+      }
+      if (coverImage && fs.existsSync(coverImage)) {
+        fs.unlinkSync(coverImage);
+      }
+      if (outputPath && fs.existsSync(outputPath)) {
+        fs.unlinkSync(outputPath);
+      }
+    } catch (e) {}
+    res.status(500).json({ error: 'Error al procesar', message: error.message });
   }
 };

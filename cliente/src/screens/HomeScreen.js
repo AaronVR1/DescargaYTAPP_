@@ -8,19 +8,105 @@ import {
   Alert,
   ActivityIndicator,
   ScrollView,
-  Image
+  Image,
+  Platform,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
-import { getVideoInfo, getDownloadLinks, isValidYouTubeUrl } from '../api/youtubeApi';
 import { saveDownloadHistory } from '../utils/storage';
+import { getServerUrl } from '../utils/config';
+// ⭐ IMPORTAR EventSource para SSE
+import RNEventSource from 'rn-eventsource';
 
+// ===== CONFIGURACIÓN =====
+const API_YOUTUBE_ENDPOINT = '/api/youtube';
+const DOWNLOAD_TIMEOUT = 7200000;
+
+// ===== FUNCIONES DE UTILIDAD =====
+const isValidYouTubeUrl = (url) => {
+  const youtubeRegex = /^(https?:\/\/)?(www\.)?(youtube|youtu|youtube-nocookie)\.(com|be)\//;
+  return youtubeRegex.test(url);
+};
+
+const isPlaylistUrl = (url) => {
+  return url.includes('list=');
+};
+
+// ===== FUNCIONES DE API =====
+const getVideoInfo = async (url, apiBaseUrl) => {
+  try {
+    console.log('📝 Obteniendo info del video...');
+    const response = await fetch(
+      `${apiBaseUrl}${API_YOUTUBE_ENDPOINT}/info?url=${encodeURIComponent(url)}`,
+      { timeout: DOWNLOAD_TIMEOUT }
+    );
+
+    if (!response.ok) {
+      throw new Error(`Error HTTP: ${response.status}`);
+    }
+
+    const data = await response.json();
+    console.log('✅ Info recibida:', data.title);
+    return data;
+  } catch (error) {
+    console.error('❌ Error al obtener info:', error);
+    throw error;
+  }
+};
+
+const getPlaylistInfo = async (url, apiBaseUrl) => {
+  try {
+    console.log('📝 Obteniendo info de la playlist...');
+    const response = await fetch(
+      `${apiBaseUrl}${API_YOUTUBE_ENDPOINT}/playlist/info?url=${encodeURIComponent(url)}`,
+      { timeout: DOWNLOAD_TIMEOUT }
+    );
+
+    if (!response.ok) {
+      throw new Error(`Error HTTP: ${response.status}`);
+    }
+
+    const data = await response.json();
+    console.log('✅ Playlist encontrada:', data.title, `-`, data.videoCount, 'videos');
+    return data;
+  } catch (error) {
+    console.error('❌ Error al obtener info de playlist:', error);
+    throw error;
+  }
+};
+
+// ===== COMPONENTE PRINCIPAL =====
 export default function HomeScreen() {
   const [url, setUrl] = useState('');
   const [loading, setLoading] = useState(false);
   const [videoInfo, setVideoInfo] = useState(null);
+  const [playlistInfo, setPlaylistInfo] = useState(null);
   const [downloadProgress, setDownloadProgress] = useState(0);
+  const [apiBaseUrl, setApiBaseUrl] = useState('http://192.168.1.74:3000');
+  const [contentType, setContentType] = useState(null); // 'video' o 'playlist'
+  
+  // ⭐ NUEVOS ESTADOS PARA PROGRESO EN TIEMPO REAL
+  const [progressMessage, setProgressMessage] = useState('');
+  const [currentVideo, setCurrentVideo] = useState(0);
+  const [totalVideos, setTotalVideos] = useState(0);
+  const [jobId, setJobId] = useState(null);
+
+  // Cargar la URL del servidor desde AsyncStorage
+  React.useEffect(() => {
+    loadServerUrl();
+  }, []);
+
+  const loadServerUrl = async () => {
+    try {
+      const url = await getServerUrl();
+      setApiBaseUrl(url);
+      console.log('🌐 Usando servidor:', url);
+    } catch (error) {
+      console.error('Error al cargar URL del servidor:', error);
+      setApiBaseUrl('http://192.168.1.74:3000');
+    }
+  };
 
   const handleGetInfo = async () => {
     if (!url.trim()) {
@@ -35,88 +121,469 @@ export default function HomeScreen() {
 
     setLoading(true);
     setVideoInfo(null);
+    setPlaylistInfo(null);
+    setContentType(null);
 
     try {
-      console.log('🔍 Buscando video...');
-      const info = await getVideoInfo(url);
-      console.log('✅ Video encontrado:', info.title);
-      setVideoInfo(info);
+      if (isPlaylistUrl(url)) {
+        console.log('📋 Detectada playlist');
+        const info = await getPlaylistInfo(url, apiBaseUrl);
+        setPlaylistInfo(info);
+        setContentType('playlist');
+      } else {
+        console.log('🎬 Detectado video individual');
+        const info = await getVideoInfo(url, apiBaseUrl);
+        setVideoInfo(info);
+        setContentType('video');
+      }
     } catch (error) {
       console.error('❌ Error:', error);
-      Alert.alert('Error', 'No se pudo obtener la información del video');
+      Alert.alert('Error', `No se pudo obtener la información\n\n${error.message}\n\nVerifica que el servidor esté en: ${apiBaseUrl}`);
     } finally {
       setLoading(false);
     }
   };
 
-  const handleDownload = async (quality = 'high') => {
+  const shareFile = async (fileUri, fileName, mimeType) => {
+    try {
+      console.log('📤 Preparando archivo para compartir...');
+      const fileInfo = await FileSystem.getInfoAsync(fileUri);
+      if (!fileInfo.exists) {
+        Alert.alert('Error', 'El archivo no existe');
+        return;
+      }
+
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(fileUri, {
+          mimeType: mimeType,
+        });
+      } else {
+        Alert.alert('Error', 'Compartir no está disponible en este dispositivo');
+      }
+    } catch (error) {
+      console.error('❌ Error al compartir:', error);
+      Alert.alert('Error al compartir', error.message);
+    }
+  };
+
+  const clearInput = () => {
+    setUrl('');
+    setVideoInfo(null);
+    setPlaylistInfo(null);
+    setDownloadProgress(0);
+    setContentType(null);
+    setProgressMessage('');
+    setCurrentVideo(0);
+    setTotalVideos(0);
+    setJobId(null);
+  };
+
+  const handleDownloadVideo = async () => {
     if (!videoInfo) return;
 
     setLoading(true);
     setDownloadProgress(0);
 
     try {
-      console.log('📥 Iniciando descarga...');
-      const downloadData = await getDownloadLinks(url, quality);
-      
-      if (!downloadData || !downloadData.link) {
-        Alert.alert('Error', 'No se pudo obtener el enlace de descarga');
-        return;
+      let sanitizedTitle = videoInfo.title
+        .replace(/[^a-zA-Z0-9\s-]/g, '')
+        .replace(/\s+/g, '_')
+        .substring(0, 50)
+        .trim();
+
+      if (!sanitizedTitle) {
+        sanitizedTitle = `video_${Date.now()}`;
       }
 
-      console.log('🔗 Enlace obtenido:', downloadData.link.substring(0, 50) + '...');
+      let fileUri = `${FileSystem.documentDirectory}${sanitizedTitle}.mp4`;
 
-      // Limpiar el nombre del archivo (quitar caracteres especiales)
-      const sanitizedTitle = videoInfo.title
-        .replace(/[^a-z0-9]/gi, '_')
-        .substring(0, 50);
-      
-      const fileUri = `${FileSystem.documentDirectory || 'file://'}${sanitizedTitle}.mp4`;
+      const downloadUrl = `${apiBaseUrl}${API_YOUTUBE_ENDPOINT}/download?url=${encodeURIComponent(url)}`;
 
-      console.log('💾 Guardando en:', fileUri);
+      Alert.alert(
+        'Descargando...',
+        'Por favor espera, esto puede tomar 3-5 minutos.\n\nNo cierres la app.',
+        [{ text: 'OK' }],
+        { cancelable: false }
+      );
 
       const downloadResumable = FileSystem.createDownloadResumable(
-        downloadData.link,
+        downloadUrl,
         fileUri,
-        {},
-        (downloadProgress) => {
-          const progress = downloadProgress.totalBytesWritten / downloadProgress.totalBytesExpectedToWrite;
-          setDownloadProgress(progress);
-          
-          // Mostrar progreso cada 10%
-          if (Math.round(progress * 100) % 10 === 0) {
-            console.log(`📊 Progreso: ${Math.round(progress * 100)}%`);
+        {
+          // ⭐ CONFIGURACIÓN CORRECTA DE TIMEOUT
+        },
+        (progressEvent) => {
+          try {
+            const progress = progressEvent.totalBytesWritten / progressEvent.totalBytesExpectedToWrite;
+            setDownloadProgress(progress);
+          } catch (e) {
+            console.log('Progreso:', progressEvent.totalBytesWritten);
           }
         }
       );
 
       const result = await downloadResumable.downloadAsync();
-      
-      if (!result) {
-        Alert.alert('Error', 'La descarga falló');
-        return;
+      const fileInfo = await FileSystem.getInfoAsync(fileUri);
+
+      if (!fileInfo.exists || fileInfo.size < 500000) {
+        throw new Error('Archivo incompleto o corrupto');
       }
 
-      console.log('✅ Descarga completa:', result.uri);
-      
-      // Guardar en historial
+      // ⭐ GUARDAR EN HISTORIAL
       await saveDownloadHistory({
         title: videoInfo.title,
-        uri: result.uri,
+        uri: fileUri,
+        thumbnail: videoInfo.thumbnail,
         date: new Date().toISOString(),
-        thumbnail: videoInfo.thumbnail
+        size: fileInfo.size,
+        type: 'video',
+        isPlaylist: false
       });
 
+      console.log('✅ Video guardado en historial');
+
       Alert.alert(
-        'Descarga Completa',
-        '¿Deseas compartir el video?',
+        '✅ ¡Descarga Completa!',
+        `Video: ${sanitizedTitle}\nTamaño: ${(fileInfo.size / (1024 * 1024)).toFixed(2)} MB`,
         [
-          { text: 'No', style: 'cancel' },
-          { 
-            text: 'Sí', 
+          { text: '✅ OK', style: 'default' },
+          {
+            text: '📤 Compartir',
+            onPress: () => shareFile(fileUri, sanitizedTitle, 'video/mp4')
+          }
+        ]
+      );
+
+    } catch (error) {
+      console.error('❌ Error:', error);
+      Alert.alert('Error en descarga', error.message);
+    } finally {
+      setLoading(false);
+      setDownloadProgress(0);
+    }
+  };
+
+  const handleDownloadAudio = async () => {
+    if (!videoInfo) return;
+
+    setLoading(true);
+    setDownloadProgress(0);
+
+    try {
+      let sanitizedTitle = videoInfo.title
+        .replace(/[^a-zA-Z0-9\s-]/g, '')
+        .replace(/\s+/g, '_')
+        .substring(0, 50)
+        .trim();
+
+      if (!sanitizedTitle) {
+        sanitizedTitle = `audio_${Date.now()}`;
+      }
+
+      const fileUri = `${FileSystem.documentDirectory}${sanitizedTitle}.mp3`;
+      const downloadUrl = `${apiBaseUrl}${API_YOUTUBE_ENDPOINT}/audio?url=${encodeURIComponent(url)}`;
+
+      Alert.alert(
+        'Descargando...',
+        'Por favor espera, esto puede tomar 1-2 minutos.\n\nNo cierres la app.',
+        [{ text: 'OK' }],
+        { cancelable: false }
+      );
+
+      const downloadResumable = FileSystem.createDownloadResumable(
+        downloadUrl,
+        fileUri,
+        {
+          // ⭐ SIN TIMEOUT - FileSystem legacy no lo soporta bien
+        },
+        (progressEvent) => {
+          try {
+            const progress = progressEvent.totalBytesWritten / progressEvent.totalBytesExpectedToWrite;
+            setDownloadProgress(progress);
+          } catch (e) {
+            console.log('Progreso:', progressEvent.totalBytesWritten);
+          }
+        }
+      );
+
+      const result = await downloadResumable.downloadAsync();
+      const fileInfo = await FileSystem.getInfoAsync(fileUri);
+
+      if (!fileInfo.exists || fileInfo.size < 500000) {
+        throw new Error('Archivo incompleto o corrupto');
+      }
+
+      // ⭐ GUARDAR EN HISTORIAL
+      await saveDownloadHistory({
+        title: videoInfo.title,
+        uri: fileUri,
+        thumbnail: videoInfo.thumbnail,
+        date: new Date().toISOString(),
+        size: fileInfo.size,
+        type: 'audio',
+        isPlaylist: false
+      });
+
+      console.log('✅ Audio guardado en historial');
+
+      Alert.alert(
+        '✅ ¡Audio Descargado!',
+        `Título: ${sanitizedTitle}\nTamaño: ${(fileInfo.size / (1024 * 1024)).toFixed(2)} MB`,
+        [
+          { text: '✅ OK', style: 'default' },
+          {
+            text: '📤 Compartir',
+            onPress: () => shareFile(fileUri, sanitizedTitle, 'audio/mp3')
+          }
+        ]
+      );
+
+    } catch (error) {
+      console.error('❌ Error:', error);
+      Alert.alert('Error en descarga', error.message);
+    } finally {
+      setLoading(false);
+      setDownloadProgress(0);
+    }
+  };
+
+  // ⭐ NUEVA FUNCIÓN: Descargar playlist AUDIO con progreso en tiempo real
+  const handleDownloadPlaylistAudio = async () => {
+    if (!playlistInfo) return;
+
+    setLoading(true);
+    setDownloadProgress(0);
+    setProgressMessage('Iniciando...');
+    setCurrentVideo(0);
+    setTotalVideos(playlistInfo.videoCount);
+    setJobId(null);
+
+    try {
+      console.log('🎵 Iniciando descarga de playlist como MP3 (con progreso)...');
+
+      const downloadUrl = `${apiBaseUrl}${API_YOUTUBE_ENDPOINT}/playlist/audio/progress?url=${encodeURIComponent(url)}`;
+
+      Alert.alert(
+        'Descargando Playlist...',
+        `Se descargarán ${playlistInfo.videoCount} videos.\n\nVerás el progreso en tiempo real.`,
+        [{ text: 'OK' }],
+        { cancelable: false }
+      );
+
+      // ⭐ USAR EventSource para SSE
+      const eventSource = new RNEventSource(downloadUrl);
+
+      eventSource.addEventListener('status', (event) => {
+        const data = JSON.parse(event.data);
+        console.log('📊 Progreso:', data.message);
+        
+        setProgressMessage(data.message);
+        setDownloadProgress(data.progress / 100);
+        
+        if (data.current && data.total) {
+          setCurrentVideo(data.current);
+          setTotalVideos(data.total);
+        }
+      });
+
+      eventSource.addEventListener('warning', (event) => {
+        const data = JSON.parse(event.data);
+        console.warn('⚠️', data.message);
+      });
+
+      eventSource.addEventListener('complete', async (event) => {
+        const data = JSON.parse(event.data);
+        console.log('✅ Completo! JobID:', data.jobId);
+        
+        setProgressMessage(data.message);
+        setDownloadProgress(1);
+        setJobId(data.jobId);
+        
+        eventSource.close();
+        
+        // Descargar el ZIP
+        await downloadPlaylistZip(data.jobId, 'audio');
+      });
+
+      eventSource.addEventListener('error', (event) => {
+        console.error('❌ Error SSE:', event);
+        eventSource.close();
+        setLoading(false);
+        
+        let errorMessage = 'Error en el servidor';
+        try {
+          const data = JSON.parse(event.data);
+          errorMessage = data.message || data.error;
+        } catch (e) {
+          errorMessage = 'Error de conexión con el servidor';
+        }
+        
+        Alert.alert('Error', errorMessage);
+      });
+
+      eventSource.onerror = (error) => {
+        console.error('❌ Error de conexión:', error);
+        eventSource.close();
+        setLoading(false);
+        Alert.alert('Error', 'Problemas de conexión con el servidor');
+      };
+
+    } catch (error) {
+      console.error('❌ Error:', error);
+      setLoading(false);
+      Alert.alert('Error', error.message || 'Error al descargar playlist');
+    }
+  };
+
+  // ⭐ NUEVA FUNCIÓN: Descargar playlist VIDEO con progreso en tiempo real
+  const handleDownloadPlaylistVideo = async () => {
+    if (!playlistInfo) return;
+
+    setLoading(true);
+    setDownloadProgress(0);
+    setProgressMessage('Iniciando...');
+    setCurrentVideo(0);
+    setTotalVideos(playlistInfo.videoCount);
+    setJobId(null);
+
+    try {
+      console.log('📹 Iniciando descarga de playlist como MP4 (con progreso)...');
+
+      const downloadUrl = `${apiBaseUrl}${API_YOUTUBE_ENDPOINT}/playlist/video/progress?url=${encodeURIComponent(url)}`;
+
+      Alert.alert(
+        'Descargando Playlist...',
+        `Se descargarán ${playlistInfo.videoCount} videos.\n\nVerás el progreso en tiempo real.`,
+        [{ text: 'OK' }],
+        { cancelable: false }
+      );
+
+      // ⭐ USAR EventSource para SSE
+      const eventSource = new RNEventSource(downloadUrl);
+
+      eventSource.addEventListener('status', (event) => {
+        const data = JSON.parse(event.data);
+        console.log('📊 Progreso:', data.message);
+        
+        setProgressMessage(data.message);
+        setDownloadProgress(data.progress / 100);
+        
+        if (data.current && data.total) {
+          setCurrentVideo(data.current);
+          setTotalVideos(data.total);
+        }
+      });
+
+      eventSource.addEventListener('warning', (event) => {
+        const data = JSON.parse(event.data);
+        console.warn('⚠️', data.message);
+      });
+
+      eventSource.addEventListener('complete', async (event) => {
+        const data = JSON.parse(event.data);
+        console.log('✅ Completo! JobID:', data.jobId);
+        
+        setProgressMessage(data.message);
+        setDownloadProgress(1);
+        setJobId(data.jobId);
+        
+        eventSource.close();
+        
+        // Descargar el ZIP
+        await downloadPlaylistZip(data.jobId, 'video');
+      });
+
+      eventSource.addEventListener('error', (event) => {
+        console.error('❌ Error SSE:', event);
+        eventSource.close();
+        setLoading(false);
+        
+        let errorMessage = 'Error en el servidor';
+        try {
+          const data = JSON.parse(event.data);
+          errorMessage = data.message || data.error;
+        } catch (e) {
+          errorMessage = 'Error de conexión con el servidor';
+        }
+        
+        Alert.alert('Error', errorMessage);
+      });
+
+      eventSource.onerror = (error) => {
+        console.error('❌ Error de conexión:', error);
+        eventSource.close();
+        setLoading(false);
+        Alert.alert('Error', 'Problemas de conexión con el servidor');
+      };
+
+    } catch (error) {
+      console.error('❌ Error:', error);
+      setLoading(false);
+      Alert.alert('Error', error.message || 'Error al descargar playlist');
+    }
+  };
+
+  // ⭐ NUEVA FUNCIÓN: Descargar el ZIP generado
+  const downloadPlaylistZip = async (jobId, type) => {
+    try {
+      console.log('📥 Descargando ZIP...');
+      setProgressMessage('📥 Descargando archivo ZIP...');
+
+      const timestamp = Date.now();
+      const zipFileName = `playlist_${type}_${timestamp}.zip`;
+      const zipFileUri = `${FileSystem.documentDirectory}${zipFileName}`;
+
+      const downloadUrl = `${apiBaseUrl}${API_YOUTUBE_ENDPOINT}/playlist/download/${jobId}`;
+
+      const downloadResumable = FileSystem.createDownloadResumable(
+        downloadUrl,
+        zipFileUri,
+        {},
+        (progressEvent) => {
+          try {
+            const progress = progressEvent.totalBytesWritten / progressEvent.totalBytesExpectedToWrite;
+            setDownloadProgress(progress);
+          } catch (e) {}
+        }
+      );
+
+      await downloadResumable.downloadAsync();
+
+      const zipInfo = await FileSystem.getInfoAsync(zipFileUri);
+      if (!zipInfo.exists) {
+        throw new Error('ZIP no se descargó correctamente');
+      }
+
+      console.log(`✅ ZIP descargado: ${(zipInfo.size / (1024 * 1024)).toFixed(2)} MB`);
+
+      // ⭐ GUARDAR EN HISTORIAL
+      await saveDownloadHistory({
+        title: `🎵 Playlist: ${playlistInfo.title}`,
+        uri: zipFileUri,
+        type: type, // 'audio' o 'video'
+        videoCount: totalVideos,
+        size: zipInfo.size,
+        date: new Date().toISOString(),
+        isPlaylist: true,
+        thumbnail: null // Las playlists no tienen thumbnail única
+      });
+
+      console.log('✅ Guardado en historial');
+
+      Alert.alert(
+        '✅ ¡Playlist Descargada!',
+        `Archivo: ${zipFileName}\nTamaño: ${(zipInfo.size / (1024 * 1024)).toFixed(2)} MB\nVideos: ${totalVideos}\nFormato: ${type === 'audio' ? 'MP3 320kbps' : 'MP4'}\n\nEl archivo ZIP está guardado. Puedes compartirlo o extraerlo con tu gestor de archivos.`,
+        [
+          { text: '✅ OK', style: 'default' },
+          {
+            text: '📤 Compartir ZIP',
             onPress: async () => {
-              if (await Sharing.isAvailableAsync()) {
-                await Sharing.shareAsync(result.uri);
+              try {
+                if (await Sharing.isAvailableAsync()) {
+                  await Sharing.shareAsync(zipFileUri);
+                }
+              } catch (e) {
+                console.error('Error al compartir:', e);
               }
             }
           }
@@ -124,48 +591,40 @@ export default function HomeScreen() {
       );
 
     } catch (error) {
-      console.error('❌ Error completo:', error);
-      Alert.alert(
-        'Error', 
-        `No se pudo descargar el video: ${error.message}`
-      );
+      console.error('❌ Error al descargar ZIP:', error);
+      Alert.alert('Error', 'No se pudo descargar el archivo ZIP');
     } finally {
       setLoading(false);
       setDownloadProgress(0);
+      setProgressMessage('');
     }
-  };
-
-  const clearInput = () => {
-    setUrl('');
-    setVideoInfo(null);
-    setDownloadProgress(0);
   };
 
   return (
     <ScrollView style={styles.container}>
       <View style={styles.content}>
         <View style={styles.header}>
-          <Ionicons name="logo-youtube" size={60} color="#FF0000" />
+          <Image
+            source={require('../../assets/images/monachina.png')}
+            style={{ width: 200, height: 200 }}
+            resizeMode="contain"
+          />
           <Text style={styles.title}>Descarga YTAPP</Text>
-          <Text style={styles.subtitle}>App hecha por aaron</Text>
+          <Text style={styles.subtitle}>Videos y audio de YouTube</Text>
         </View>
 
         <View style={styles.inputContainer}>
           <TextInput
             style={styles.input}
-            placeholder="Pega aquí la URL del video de YouTube"
+            placeholder="Pega aquí la URL de YouTube..."
             value={url}
             onChangeText={setUrl}
             autoCapitalize="none"
             autoCorrect={false}
-            editable={!loading}
           />
           {url.length > 0 && (
-            <TouchableOpacity 
-              style={styles.clearButton}
-              onPress={clearInput}
-            >
-              <Ionicons name="close-circle" size={24} color="#888" />
+            <TouchableOpacity onPress={clearInput} style={styles.clearButton}>
+              <Ionicons name="close-circle" size={24} color="#999" />
             </TouchableOpacity>
           )}
         </View>
@@ -175,30 +634,35 @@ export default function HomeScreen() {
           onPress={handleGetInfo}
           disabled={loading}
         >
-          {loading && !videoInfo ? (
+          {loading ? (
             <ActivityIndicator color="#fff" />
           ) : (
             <>
               <Ionicons name="search" size={20} color="#fff" />
-              <Text style={styles.buttonText}>Buscar Video</Text>
+              <Text style={styles.buttonText}>Buscar</Text>
             </>
           )}
         </TouchableOpacity>
 
-        {videoInfo && (
+        {/* VIDEO INDIVIDUAL */}
+        {contentType === 'video' && videoInfo && (
           <View style={styles.videoCard}>
-            <Image
-              source={{ uri: videoInfo.thumbnail }}
-              style={styles.thumbnail}
-              resizeMode="cover"
-            />
+            <View style={styles.successBadge}>
+              <Ionicons name="checkmark-circle" size={18} color="#fff" />
+              <Text style={styles.successBadgeText}>✅ Video Encontrado</Text>
+            </View>
+
+            {videoInfo.thumbnail && (
+              <Image
+                source={{ uri: videoInfo.thumbnail }}
+                style={styles.thumbnail}
+              />
+            )}
+
             <Text style={styles.videoTitle}>{videoInfo.title}</Text>
-            <Text style={styles.videoInfo}>
-              Canal: {videoInfo.channel || 'Desconocido'}
-            </Text>
-            <Text style={styles.videoInfo}>
-              Duración: {videoInfo.duration || 'N/A'}
-            </Text>
+            <Text style={styles.videoInfo}>Canal: {videoInfo.channel}</Text>
+            <Text style={styles.videoInfo}>Duración: {videoInfo.duration}</Text>
+            <Text style={styles.videoInfo}>Vistas: {videoInfo.views}</Text>
 
             {downloadProgress > 0 && downloadProgress < 1 && (
               <View style={styles.progressContainer}>
@@ -216,20 +680,113 @@ export default function HomeScreen() {
               </View>
             )}
 
-            <TouchableOpacity
-              style={[styles.downloadButton, loading && styles.buttonDisabled]}
-              onPress={() => handleDownload('high')}
-              disabled={loading}
-            >
-              {loading && videoInfo ? (
-                <ActivityIndicator color="#fff" />
-              ) : (
-                <>
-                  <Ionicons name="download" size={20} color="#fff" />
-                  <Text style={styles.buttonText}>Descargar Video</Text>
-                </>
-              )}
-            </TouchableOpacity>
+            <View style={styles.buttonGroup}>
+              <TouchableOpacity
+                style={[styles.downloadButton, loading && styles.buttonDisabled]}
+                onPress={handleDownloadVideo}
+                disabled={loading}
+              >
+                {loading ? (
+                  <ActivityIndicator color="#fff" />
+                ) : (
+                  <>
+                    <Ionicons name="download" size={20} color="#fff" />
+                    <Text style={styles.buttonText}>MP4</Text>
+                  </>
+                )}
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.audioButton, loading && styles.buttonDisabled]}
+                onPress={handleDownloadAudio}
+                disabled={loading}
+              >
+                {loading ? (
+                  <ActivityIndicator color="#fff" />
+                ) : (
+                  <>
+                    <Ionicons name="musical-notes" size={20} color="#fff" />
+                    <Text style={styles.buttonText}>MP3</Text>
+                  </>
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
+        )}
+
+        {/* PLAYLIST */}
+        {contentType === 'playlist' && playlistInfo && (
+          <View style={styles.videoCard}>
+            <View style={styles.playlistBadge}>
+              <Ionicons name="checkmark-circle" size={18} color="#fff" />
+              <Text style={styles.playlistBadgeText}>✅ Playlist Encontrada</Text>
+            </View>
+
+            <Text style={styles.videoTitle}>{playlistInfo.title}</Text>
+            <Text style={styles.videoInfo}>
+              Total de videos: {playlistInfo.videoCount}
+            </Text>
+
+            {/* ⭐ PROGRESO EN TIEMPO REAL */}
+            {loading && (
+              <View style={styles.progressContainer}>
+                {progressMessage && (
+                  <Text style={styles.progressMessage}>
+                    {progressMessage}
+                  </Text>
+                )}
+                
+                {totalVideos > 0 && currentVideo > 0 && (
+                  <Text style={styles.videoCounter}>
+                    Video {currentVideo} / {totalVideos}
+                  </Text>
+                )}
+                
+                <View style={styles.progressBar}>
+                  <View 
+                    style={[
+                      styles.progressFill, 
+                      { width: `${downloadProgress * 100}%` }
+                    ]} 
+                  />
+                </View>
+                <Text style={styles.progressText}>
+                  {Math.round(downloadProgress * 100)}%
+                </Text>
+              </View>
+            )}
+
+            <View style={styles.buttonGroup}>
+              <TouchableOpacity
+                style={[styles.downloadButton, loading && styles.buttonDisabled]}
+                onPress={handleDownloadPlaylistVideo}
+                disabled={loading}
+              >
+                {loading ? (
+                  <ActivityIndicator color="#fff" />
+                ) : (
+                  <>
+                    <Ionicons name="download" size={20} color="#fff" />
+                    <Text style={styles.buttonText}>MP4</Text>
+                  </>
+                )}
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.audioButton, loading && styles.buttonDisabled]}
+                onPress={handleDownloadPlaylistAudio}
+                disabled={loading}
+              >
+                {loading ? (
+                  <ActivityIndicator color="#fff" />
+                ) : (
+                  <>
+                    <Ionicons name="musical-notes" size={20} color="#fff" />
+                    <Text style={styles.buttonText}>MP3</Text>
+                  </>
+                )}
+              </TouchableOpacity>
+            </View>
           </View>
         )}
       </View>
@@ -240,7 +797,7 @@ export default function HomeScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#f5f5f5',
+    backgroundColor: '#1a0033',
   },
   content: {
     padding: 20,
@@ -253,12 +810,15 @@ const styles = StyleSheet.create({
   title: {
     fontSize: 24,
     fontWeight: 'bold',
-    color: '#333',
+    color: '#8b5cf6',
     marginTop: 10,
+    textShadowColor: '#8b5cf6',
+    textShadowOffset: { width: 0, height: 0 },
+    textShadowRadius: 20,
   },
   subtitle: {
     fontSize: 14,
-    color: '#666',
+    color: '#ffffff',
     marginTop: 5,
   },
   inputContainer: {
@@ -269,7 +829,7 @@ const styles = StyleSheet.create({
   },
   input: {
     flex: 1,
-    backgroundColor: '#fff',
+    backgroundColor: '#ffffffff',
     padding: 15,
     borderRadius: 10,
     borderWidth: 1,
@@ -281,7 +841,7 @@ const styles = StyleSheet.create({
     right: 10,
   },
   button: {
-    backgroundColor: '#2563eb',
+    backgroundColor: '#3b82f6',
     padding: 15,
     borderRadius: 10,
     flexDirection: 'row',
@@ -308,6 +868,38 @@ const styles = StyleSheet.create({
     shadowRadius: 4,
     elevation: 3,
   },
+  successBadge: {
+    backgroundColor: '#10b981',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 20,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    alignSelf: 'flex-start',
+    marginBottom: 15,
+  },
+  playlistBadge: {
+    backgroundColor: '#8b5cf6',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 20,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    alignSelf: 'flex-start',
+    marginBottom: 15,
+  },
+  successBadgeText: {
+    color: '#fff',
+    fontSize: 13,
+    fontWeight: 'bold',
+  },
+  playlistBadgeText: {
+    color: '#fff',
+    fontSize: 13,
+    fontWeight: 'bold',
+  },
   thumbnail: {
     width: '100%',
     height: 200,
@@ -328,6 +920,19 @@ const styles = StyleSheet.create({
   progressContainer: {
     marginVertical: 15,
   },
+  progressMessage: {
+    fontSize: 14,
+    color: '#666',
+    marginBottom: 8,
+    textAlign: 'center',
+  },
+  videoCounter: {
+    fontSize: 13,
+    color: '#8b5cf6',
+    fontWeight: 'bold',
+    marginBottom: 8,
+    textAlign: 'center',
+  },
   progressBar: {
     height: 10,
     backgroundColor: '#e0e0e0',
@@ -343,14 +948,29 @@ const styles = StyleSheet.create({
     marginTop: 5,
     color: '#666',
   },
+  buttonGroup: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 15,
+  },
   downloadButton: {
+    flex: 1,
     backgroundColor: '#10b981',
     padding: 15,
     borderRadius: 10,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 10,
-    marginTop: 15,
+    gap: 8,
+  },
+  audioButton: {
+    flex: 1,
+    backgroundColor: '#ff005d',
+    padding: 15,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexDirection: 'row',
+    gap: 8,
   },
 });
