@@ -285,7 +285,7 @@ Una vez configurada la IP:
 ![Video Descargado](cliente/screenshot/Compartir.jpeg)
 ![Extraccion de Video](cliente/screenshot/Seleccionar.jpeg)
 ![Elegir Ruta de Descarga](cliente/screenshot/sharing.jpeg)
-![Video en Reproduccion desde Galeria](cliente/screenshot/VideoDescargado.jpeg.jpeg)
+![Video en Reproduccion desde Galeria](cliente/screenshot/VideoDescargado.jpeg)
 
 ## 7. Ejecución de la Aplicación
 
