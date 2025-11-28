@@ -281,10 +281,15 @@ Una vez configurada la IP:
 2. Pega cualquier URL de YouTube
 3. Si se carga la información del video, la conexión es correcta
 
+*Comprobacion de Conexion al momento de pegar url:
 ![Conexion Exitosa](cliente/screenshot/EncontroVideo.jpeg)
+*Elegir un formato de Descarga
 ![Video Descargado](cliente/screenshot/Compartir.jpeg)
-![Extraccion de Video](cliente/screenshot/Seleccionar.jpeg)
+*Una vez descargado se eleccionara la aplicacion: Ex File Explorer
+![Extraccion de Video](cliente/screenshot/seleccionar.jpeg)
+Elegiremos la ruta donde se descargara nuestro video
 ![Elegir Ruta de Descarga](cliente/screenshot/sharing.jpeg)
+Verificamos que ya este en la galeria
 ![Video en Reproduccion desde Galeria](cliente/screenshot/VideoDescargado.jpeg)
 
 ## 7. Ejecución de la Aplicación
