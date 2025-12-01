@@ -116,9 +116,18 @@ exports.getPlaylistInfo = async (req, res) => {
 
     console.log(`✅ Playlist contiene ${videos.length} videos`);
 
+    // ⭐ Obtener thumbnail del primer video de la playlist
+    let thumbnail = null;
+    if (videos.length > 0 && videos[0].id) {
+      // YouTube thumbnail estándar del primer video (mqdefault = medium quality)
+      thumbnail = `https://i.ytimg.com/vi/${videos[0].id}/mqdefault.jpg`;
+      console.log(`🖼️ Thumbnail de playlist: ${thumbnail}`);
+    }
+
     const playlistInfo = {
       title: videos[0]?.playlist_title || 'Playlist',
       videoCount: videos.length,
+      thumbnail: thumbnail, // ⭐ NUEVO: Miniatura de la playlist
       videos: videos.slice(0, 50).map(v => ({
         title: v.title,
         id: v.id,

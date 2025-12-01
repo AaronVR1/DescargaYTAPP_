@@ -24,6 +24,7 @@
       "edgeToEdgeEnabled": true,
       "package": "com.aaron_v888.descargayt",
       "versionCode": 1,
+      "usesCleartextTraffic": true,
       "permissions": [
         "INTERNET",
         "READ_EXTERNAL_STORAGE",
@@ -34,11 +35,19 @@
       "favicon": "./assets/favicon.png"
     },
     "plugins": [
-      "expo-font"
+      "expo-font",
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "usesCleartextTraffic": true
+          }
+        }
+      ]
     ],
     "extra": {
       "eas": {
-        "projectId": "c003df3e-da02-4c80-b5b0-f351110f20fa"
+        "projectId": "202b5e88-3a16-4122-be82-f64624626a9f"
       }
     }
   }

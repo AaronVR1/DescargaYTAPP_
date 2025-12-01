@@ -11,7 +11,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import * as Sharing from 'expo-sharing';
-import * as FileSystem from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy'; // ⭐ Usando versión legacy
 import { getDownloadHistory, removeFromHistory } from '../utils/storage';
 
 export default function DownloadsScreen() {
@@ -49,12 +49,9 @@ export default function DownloadsScreen() {
   };
 
   const handleDelete = async (item) => {
-    const itemType = item.isPlaylist ? 'playlist' : 'video';
-    const itemName = item.isPlaylist ? 'esta playlist' : 'este video';
-    
     Alert.alert(
       'Eliminar',
-      `¿Estás seguro de que deseas eliminar ${itemName}?`,
+      '¿Estás seguro de que deseas eliminar este video?',
       [
         { text: 'Cancelar', style: 'cancel' },
         {
@@ -65,9 +62,9 @@ export default function DownloadsScreen() {
               await FileSystem.deleteAsync(item.uri, { idempotent: true });
               await removeFromHistory(item.uri);
               loadDownloads();
-              Alert.alert('Éxito', `${itemType === 'playlist' ? 'Playlist' : 'Video'} eliminado correctamente`);
+              Alert.alert('Éxito', 'Video eliminado correctamente');
             } catch (error) {
-              Alert.alert('Error', `No se pudo eliminar el ${itemType}`);
+              Alert.alert('Error', 'No se pudo eliminar el video');
             }
           }
         }
@@ -77,45 +74,17 @@ export default function DownloadsScreen() {
 
   const renderItem = ({ item }) => (
     <View style={styles.card}>
-      {/* Mostrar thumbnail solo si NO es playlist */}
-      {item.thumbnail && !item.isPlaylist && (
+      {item.thumbnail && (
         <Image
           source={{ uri: item.thumbnail }}
           style={styles.thumbnail}
           resizeMode="cover"
         />
       )}
-      
-      {/* Si es playlist, mostrar un ícono en lugar de thumbnail */}
-      {item.isPlaylist && (
-        <View style={styles.playlistIconContainer}>
-          <Ionicons name="albums" size={80} color="#8b5cf6" />
-          <Text style={styles.playlistIconText}>PLAYLIST</Text>
-        </View>
-      )}
-
       <View style={styles.cardContent}>
-        {/* Badge de Playlist */}
-        {item.isPlaylist && (
-          <View style={styles.playlistBadge}>
-            <Ionicons name="list" size={14} color="#fff" />
-            <Text style={styles.playlistBadgeText}>
-              {item.videoCount} videos • {item.type === 'audio' ? 'MP3' : 'MP4'}
-            </Text>
-          </View>
-        )}
-
         <Text style={styles.title} numberOfLines={2}>
           {item.title}
         </Text>
-        
-        {/* Mostrar tamaño si está disponible */}
-        {item.size && (
-          <Text style={styles.sizeText}>
-            📦 {(item.size / (1024 * 1024)).toFixed(2)} MB
-          </Text>
-        )}
-        
         <Text style={styles.date}>
           {new Date(item.date).toLocaleDateString('es-ES', {
             year: 'numeric',
@@ -126,7 +95,6 @@ export default function DownloadsScreen() {
           })}
         </Text>
       </View>
-      
       <View style={styles.actions}>
         <TouchableOpacity
           style={styles.actionButton}
@@ -147,7 +115,7 @@ export default function DownloadsScreen() {
   if (loading) {
     return (
       <View style={styles.centerContainer}>
-        <Text style={styles.loadingText}>Cargando...</Text>
+        <Text>Cargando...</Text>
       </View>
     );
   }
@@ -158,7 +126,7 @@ export default function DownloadsScreen() {
         <Ionicons name="download-outline" size={80} color="#ccc" />
         <Text style={styles.emptyText}>No hay descargas aún</Text>
         <Text style={styles.emptySubtext}>
-          Los videos y playlists que descargues aparecerán aquí
+          Los videos que descargues aparecerán aquí
         </Text>
       </View>
     );
@@ -188,10 +156,6 @@ const styles = StyleSheet.create({
     backgroundColor: '#1a0033',
     padding: 20,
   },
-  loadingText: {
-    color: '#fff',
-    fontSize: 16,
-  },
   list: {
     padding: 15,
   },
@@ -210,47 +174,13 @@ const styles = StyleSheet.create({
     width: '100%',
     height: 150,
   },
-  playlistIconContainer: {
-    width: '100%',
-    height: 150,
-    backgroundColor: '#f3f4f6',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  playlistIconText: {
-    color: '#8b5cf6',
-    fontSize: 16,
-    fontWeight: 'bold',
-    marginTop: 10,
-  },
   cardContent: {
     padding: 15,
-  },
-  playlistBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#8b5cf6',
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 15,
-    alignSelf: 'flex-start',
-    marginBottom: 10,
-    gap: 5,
-  },
-  playlistBadgeText: {
-    color: '#fff',
-    fontSize: 12,
-    fontWeight: 'bold',
   },
   title: {
     fontSize: 16,
     fontWeight: 'bold',
     color: '#504f4fff',
-    marginBottom: 5,
-  },
-  sizeText: {
-    fontSize: 13,
-    color: '#666',
     marginBottom: 5,
   },
   date: {
@@ -271,7 +201,7 @@ const styles = StyleSheet.create({
   emptyText: {
     fontSize: 18,
     fontWeight: 'bold',
-    color: '#ffffff',
+    color: '#666',
     marginTop: 20,
   },
   emptySubtext: {

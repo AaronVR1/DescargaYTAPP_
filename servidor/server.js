@@ -67,7 +67,7 @@ app.use((err, req, res, next) => {
 // Iniciar servidor con timeout aumentado
 const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 Servidor corriendo en http://localhost:${PORT}`);
-  console.log(`📡 Accesible desde: http://192.168.1.74:${PORT}`);
+  console.log(`📡 Accesible desde: http://192.168.0.59:${PORT}`);
   console.log('✅ Presiona Ctrl+C para detener');
 });
 

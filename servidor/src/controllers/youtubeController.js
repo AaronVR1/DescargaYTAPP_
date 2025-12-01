@@ -25,6 +25,15 @@ function getVideoId(url) {
   return null;
 }
 
+// ⭐ NUEVA FUNCIÓN: Sanitizar nombres de archivo
+function sanitizeFilename(filename) {
+  return filename
+    .replace(/[<>:"/\\|?*]/g, '') // Quitar caracteres inválidos
+    .replace(/\s+/g, ' ')          // Múltiples espacios → un espacio
+    .trim()                         // Quitar espacios al inicio/fin
+    .substring(0, 100);             // Máximo 100 caracteres
+}
+
 function cleanupOldFiles() {
   try {
     const files = fs.readdirSync(tempDir);
@@ -150,18 +159,21 @@ exports.downloadVideo = async (req, res) => {
       '-R', '3',
       '--no-warnings'
     ], {
-      maxBuffer: 100 * 1024 * 1024,
-      timeout: 1800000
+      maxBuffer: 500 * 1024 * 1024,
+      timeout: 7200000
     });
 
-    const fileExists = await waitForFile(outputFile, 120000);
+    const videoFileExists = await waitForFile(outputFile, 180000);
+    if (!videoFileExists) {
+      return res.status(500).json({ error: 'Error: No se pudo descargar el video' });
+    }
 
-    if (!fileExists || !fs.existsSync(outputFile)) {
-      return res.status(500).json({ error: 'Error: No se pudo crear el archivo' });
+    if (!fs.existsSync(outputFile)) {
+      return res.status(500).json({ error: 'Error: Archivo de video no existe' });
     }
 
     const fileSize = fs.statSync(outputFile).size;
-    console.log(`✅ Video listo: ${(fileSize / (1024 * 1024)).toFixed(2)} MB`);
+    console.log(`✅ Video descargado: ${(fileSize / (1024 * 1024)).toFixed(2)} MB`);
 
     if (fileSize < 500000) {
       fs.unlinkSync(outputFile);
@@ -170,7 +182,7 @@ exports.downloadVideo = async (req, res) => {
 
     outputPath = outputFile;
 
-    console.log('📤 Enviando archivo al cliente...');
+    console.log('📤 Enviando video al cliente...');
 
     res.download(outputFile, `video_${videoId}.mp4`, (err) => {
       if (err) {
@@ -183,7 +195,7 @@ exports.downloadVideo = async (req, res) => {
         try {
           if (outputPath && fs.existsSync(outputPath)) {
             fs.unlinkSync(outputPath);
-            console.log('🧹 Temporal eliminado');
+            console.log('🧹 Temporales eliminados');
           }
         } catch (e) {}
       }, 5000);
@@ -191,12 +203,12 @@ exports.downloadVideo = async (req, res) => {
 
   } catch (error) {
     console.error('❌ Error:', error.message);
-    if (outputPath && fs.existsSync(outputPath)) {
-      try {
+    try {
+      if (outputPath && fs.existsSync(outputPath)) {
         fs.unlinkSync(outputPath);
-      } catch (e) {}
-    }
-    res.status(500).json({ error: 'Error al procesar', message: error.message });
+      }
+    } catch (e) {}
+    res.status(500).json({ error: 'Error al descargar', message: error.message });
   }
 };
 
@@ -219,10 +231,29 @@ exports.downloadAudio = async (req, res) => {
 
     cleanupOldFiles();
 
+    // ⭐ PRIMERO: Obtener información del video para el título
+    console.log('📋 Obteniendo información del video...');
+    const { stdout: infoStdout } = await execFileAsync(ytDlpPath, [
+      '-j',
+      '--no-warnings',
+      url
+    ], { maxBuffer: 10 * 1024 * 1024 });
+
+    const videoData = JSON.parse(infoStdout);
+    const title = videoData.title || 'Desconocido';
+    const artist = videoData.uploader || 'Desconocido';
+    const thumbnailUrl = videoData.thumbnail;
+
+    // ⭐ Sanitizar título para usarlo como nombre de archivo
+    const sanitizedTitle = sanitizeFilename(title);
+    console.log(`📝 Título: ${title}`);
+    console.log(`👤 Artista: ${artist}`);
+
     const timestamp = Date.now();
     tempMp3 = path.join(tempDir, `audio_temp_${videoId}_${timestamp}.mp3`);
     coverImage = path.join(tempDir, `cover_${videoId}_${timestamp}.jpg`);
-    const mp3File = path.join(tempDir, `audio_${videoId}_${timestamp}.mp3`);
+    // ⭐ USAR TÍTULO SANITIZADO en lugar de videoId
+    const mp3File = path.join(tempDir, `${sanitizedTitle}.mp3`);
 
     console.log('🎵 Descargando audio 320kbps...');
 
@@ -260,21 +291,10 @@ exports.downloadAudio = async (req, res) => {
       return res.status(500).json({ error: 'Error: Archivo muy pequeño' });
     }
 
-    // Obtener información del video para conseguir la portada
-    console.log('🖼️ Descargando portada...');
-    const { stdout } = await execFileAsync(ytDlpPath, [
-      '-j',
-      '--no-warnings',
-      url
-    ], { maxBuffer: 10 * 1024 * 1024 });
-
-    const videoData = JSON.parse(stdout);
-    const thumbnailUrl = videoData.thumbnail;
-    const title = videoData.title || 'Desconocido';
-    const artist = videoData.uploader || 'Desconocido';
-
+    // Descargar portada e incrustarla
     if (thumbnailUrl) {
       try {
+        console.log('🖼️ Descargando portada...');
         await downloadImage(thumbnailUrl, coverImage);
         console.log('✅ Portada descargada');
 
@@ -290,6 +310,7 @@ exports.downloadAudio = async (req, res) => {
           '-metadata:s:v', 'comment="Cover"',
           '-metadata', `title=${title}`,
           '-metadata', `artist=${artist}`,
+          '-id3v2_version', '3',
           '-y',
           mp3File
         ], {
@@ -318,7 +339,8 @@ exports.downloadAudio = async (req, res) => {
 
     console.log('📤 Enviando audio al cliente...');
 
-    res.download(mp3File, `audio_${videoId}.mp3`, (err) => {
+    // ⭐ USAR TÍTULO SANITIZADO como nombre de descarga
+    res.download(mp3File, `${sanitizedTitle}.mp3`, (err) => {
       if (err) {
         console.error('❌ Error al enviar:', err.message);
       } else {

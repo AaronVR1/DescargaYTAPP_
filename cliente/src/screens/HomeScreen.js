@@ -12,6 +12,7 @@ import {
   Platform,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { useFocusEffect } from '@react-navigation/native';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import { saveDownloadHistory } from '../utils/storage';
@@ -83,7 +84,7 @@ export default function HomeScreen() {
   const [videoInfo, setVideoInfo] = useState(null);
   const [playlistInfo, setPlaylistInfo] = useState(null);
   const [downloadProgress, setDownloadProgress] = useState(0);
-  const [apiBaseUrl, setApiBaseUrl] = useState('http://192.168.1.74:3000');
+  const [apiBaseUrl, setApiBaseUrl] = useState(null); // ⭐ SIN IP hardcodeada
   const [contentType, setContentType] = useState(null); // 'video' o 'playlist'
   
   // ⭐ NUEVOS ESTADOS PARA PROGRESO EN TIEMPO REAL
@@ -92,23 +93,53 @@ export default function HomeScreen() {
   const [totalVideos, setTotalVideos] = useState(0);
   const [jobId, setJobId] = useState(null);
 
-  // Cargar la URL del servidor desde AsyncStorage
-  React.useEffect(() => {
-    loadServerUrl();
-  }, []);
+  // ⭐ Cargar la URL del servidor cada vez que la pantalla gana foco
+  // Esto permite que los cambios de Settings se apliquen inmediatamente
+  useFocusEffect(
+    React.useCallback(() => {
+      loadServerUrl();
+    }, [])
+  );
 
   const loadServerUrl = async () => {
     try {
       const url = await getServerUrl();
-      setApiBaseUrl(url);
-      console.log('🌐 Usando servidor:', url);
+      if (!url) {
+        // NO hay configuración guardada
+        Alert.alert(
+          '⚙️ Configuración Requerida',
+          'Antes de descargar videos, debes configurar la dirección IP del servidor.\n\n' +
+          '1. Ve a la pestaña "Configuración"\n' +
+          '2. Sigue las instrucciones\n' +
+          '3. Ingresa la IP del servidor\n' +
+          '4. Presiona "Guardar"\n\n' +
+          'Esto solo se hace una vez.',
+          [{ text: 'Entendido', style: 'default' }]
+        );
+        setApiBaseUrl(null);
+        console.log('⚠️ No hay configuración del servidor');
+      } else {
+        setApiBaseUrl(url);
+        console.log('🌐 Usando servidor:', url);
+      }
     } catch (error) {
       console.error('Error al cargar URL del servidor:', error);
-      setApiBaseUrl('http://192.168.1.74:3000');
+      setApiBaseUrl(null);
     }
   };
 
   const handleGetInfo = async () => {
+    // Verificar que hay configuración
+    if (!apiBaseUrl) {
+      Alert.alert(
+        '⚙️ Servidor No Configurado',
+        'Debes configurar la IP del servidor primero.\n\n' +
+        'Ve a la pestaña "Configuración" y sigue las instrucciones.',
+        [{ text: 'OK' }]
+      );
+      return;
+    }
+
     if (!url.trim()) {
       Alert.alert('Error', 'Por favor ingresa una URL de YouTube');
       return;
@@ -565,7 +596,7 @@ export default function HomeScreen() {
         size: zipInfo.size,
         date: new Date().toISOString(),
         isPlaylist: true,
-        thumbnail: null // Las playlists no tienen thumbnail única
+        thumbnail: playlistInfo.thumbnail // ⭐ AHORA incluye thumbnail
       });
 
       console.log('✅ Guardado en historial');
@@ -606,7 +637,7 @@ export default function HomeScreen() {
         <View style={styles.header}>
           <Image
             source={require('../../assets/images/monachina.png')}
-            style={{ width: 200, height: 200 }}
+            style={{ width: 250, height: 250 }}
             resizeMode="contain"
           />
           <Text style={styles.title}>Descarga YTAPP</Text>
@@ -643,6 +674,49 @@ export default function HomeScreen() {
             </>
           )}
         </TouchableOpacity>
+
+        {/* ⭐ CARACTERÍSTICAS - Se oculta cuando hay contenido encontrado */}
+        {!videoInfo && !playlistInfo && !loading && (
+          <View style={styles.featuresContainer}>
+            <Text style={styles.featuresTitle}>✨ Características</Text>
+            
+            <View style={styles.featureCard}>
+              <View style={styles.featureIconContainer}>
+                <Ionicons name="videocam" size={32} color="#8b5cf6" />
+              </View>
+              <View style={styles.featureContent}>
+                <Text style={styles.featureTitle}>Videos en Full HD</Text>
+                <Text style={styles.featureDescription}>
+                  Descarga videos hasta 1080p con la mejor calidad
+                </Text>
+              </View>
+            </View>
+
+            <View style={styles.featureCard}>
+              <View style={styles.featureIconContainer}>
+                <Ionicons name="musical-notes" size={32} color="#ec4899" />
+              </View>
+              <View style={styles.featureContent}>
+                <Text style={styles.featureTitle}>Audio de Alta Calidad</Text>
+                <Text style={styles.featureDescription}>
+                  MP3 a 320kbps con portadas incrustadas
+                </Text>
+              </View>
+            </View>
+
+            <View style={styles.featureCard}>
+              <View style={styles.featureIconContainer}>
+                <Ionicons name="list" size={32} color="#22d3ee" />
+              </View>
+              <View style={styles.featureContent}>
+                <Text style={styles.featureTitle}>Playlists Completas</Text>
+                <Text style={styles.featureDescription}>
+                  Descarga playlists enteras con un solo toque
+                </Text>
+              </View>
+            </View>
+          </View>
+        )}
 
         {/* VIDEO INDIVIDUAL */}
         {contentType === 'video' && videoInfo && (
@@ -721,6 +795,14 @@ export default function HomeScreen() {
               <Ionicons name="checkmark-circle" size={18} color="#fff" />
               <Text style={styles.playlistBadgeText}>✅ Playlist Encontrada</Text>
             </View>
+
+            {/* ⭐ THUMBNAIL DE LA PLAYLIST */}
+            {playlistInfo.thumbnail && (
+              <Image
+                source={{ uri: playlistInfo.thumbnail }}
+                style={styles.thumbnail}
+              />
+            )}
 
             <Text style={styles.videoTitle}>{playlistInfo.title}</Text>
             <Text style={styles.videoInfo}>
@@ -972,5 +1054,56 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     flexDirection: 'row',
     gap: 8,
+  },
+  // ⭐ ESTILOS PARA CARACTERÍSTICAS
+  featuresContainer: {
+    marginTop: 30,
+    marginBottom: 10,
+  },
+  featuresTitle: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    color: '#fff',
+    marginBottom: 20,
+    textAlign: 'center',
+  },
+  featureCard: {
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    backdropFilter: 'blur(10px)',
+    borderRadius: 15,
+    padding: 20,
+    marginBottom: 15,
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.2)',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 5,
+  },
+  featureIconContainer: {
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    backgroundColor: 'rgba(255, 255, 255, 0.15)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 15,
+  },
+  featureContent: {
+    flex: 1,
+  },
+  featureTitle: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#fff',
+    marginBottom: 5,
+  },
+  featureDescription: {
+    fontSize: 13,
+    color: 'rgba(255, 255, 255, 0.8)',
+    lineHeight: 18,
   },
 });

@@ -1,232 +1,270 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
-  StyleSheet,
+  TextInput,
   TouchableOpacity,
+  StyleSheet,
   Alert,
   ScrollView,
-  TextInput,
-  Modal,
+  ActivityIndicator,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import * as FileSystem from 'expo-file-system';
-import { clearAllHistory } from '../utils/storage';
-import { getServerConfig, setServerUrl } from '../utils/config';
+import { setServerUrl, getServerConfig } from '../utils/config';
 
 export default function SettingsScreen() {
-  const [serverIp, setServerIp] = useState('');
-  const [serverPort, setServerPort] = useState('3000');
-  const [modalVisible, setModalVisible] = useState(false);
-  const [inputValue, setInputValue] = useState('');
-  const [inputType, setInputType] = useState(''); // 'ip' o 'port'
+  const [ip, setIp] = useState('');
+  const [port, setPort] = useState('3000');
+  const [loading, setLoading] = useState(false);
+  const [testing, setTesting] = useState(false);
 
-  React.useEffect(() => {
-    loadServerConfig();
+  useEffect(() => {
+    loadConfig();
   }, []);
 
-  const loadServerConfig = async () => {
+  const loadConfig = async () => {
     try {
       const config = await getServerConfig();
-      setServerIp(config.ip);
-      setServerPort(config.port);
-      console.log('✅ Configuración cargada:', config);
+      if (config) {
+        setIp(config.ip);
+        setPort(config.port || '3000');
+      }
     } catch (error) {
       console.error('Error al cargar configuración:', error);
     }
   };
 
-  const handleClearHistory = () => {
-    Alert.alert(
-      'Limpiar Historial',
-      '¿Estás seguro de que deseas eliminar todo el historial de descargas?',
-      [
-        { text: 'Cancelar', style: 'cancel' },
-        {
-          text: 'Eliminar',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              await clearAllHistory();
-              Alert.alert('Éxito', 'Historial eliminado correctamente');
-            } catch (error) {
-              Alert.alert('Error', 'No se pudo limpiar el historial');
-            }
-          }
-        }
-      ]
-    );
-  };
-
-  const handleCheckStorage = async () => {
-    try {
-      const info = await FileSystem.getInfoAsync(FileSystem.documentDirectory);
-      Alert.alert(
-        'Información de Almacenamiento',
-        `Directorio: ${info.uri}\n\nLos archivos se guardan en la carpeta de documentos de la app.`
-      );
-    } catch (error) {
-      Alert.alert('Error', 'No se pudo obtener información de almacenamiento');
-    }
-  };
-
-  const openModal = (type) => {
-    setInputType(type);
-    if (type === 'ip') {
-      setInputValue(serverIp);
-    } else {
-      setInputValue(serverPort);
-    }
-    setModalVisible(true);
-  };
-
-  const handleSave = async () => {
-    if (!inputValue.trim()) {
-      Alert.alert('Error', 'El valor no puede estar vacío');
+  const testConnection = async () => {
+    if (!ip.trim()) {
+      Alert.alert('Error', 'Por favor ingresa una dirección IP');
       return;
     }
 
+    setTesting(true);
     try {
-      if (inputType === 'ip') {
-        await setServerUrl(inputValue, serverPort);
-        setServerIp(inputValue);
-        Alert.alert('Éxito', `IP guardada: ${inputValue}`);
+      const testUrl = `http://${ip.trim()}:${port}`;
+      console.log('🔍 Probando conexión a:', testUrl);
+
+      // ⭐ Crear timeout manual porque fetch no lo soporta directamente
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 segundos
+
+      const response = await fetch(testUrl, {
+        method: 'GET',
+        signal: controller.signal,
+      });
+
+      clearTimeout(timeoutId);
+
+      if (response.ok) {
+        const data = await response.json();
+        Alert.alert(
+          '✅ Conexión Exitosa',
+          `Servidor encontrado:\n${data.message || 'Servidor activo'}\n\nIP: ${ip}\nPuerto: ${port}`,
+          [{ text: 'OK' }]
+        );
       } else {
-        await setServerUrl(serverIp, inputValue);
-        setServerPort(inputValue);
-        Alert.alert('Éxito', `Puerto guardado: ${inputValue}`);
+        Alert.alert(
+          '⚠️ Servidor Responde',
+          `El servidor respondió pero con código: ${response.status}\n\nVerifica que sea el servidor correcto.`,
+          [{ text: 'OK' }]
+        );
       }
-      setModalVisible(false);
-      await loadServerConfig();
     } catch (error) {
-      Alert.alert('Error', error.message);
+      let errorMessage = 'No se pudo conectar al servidor.\n\n';
+      
+      if (error.name === 'AbortError') {
+        errorMessage += 'Timeout: El servidor no respondió en 10 segundos.\n\n';
+      } else {
+        errorMessage += `Error: ${error.message}\n\n`;
+      }
+      
+      errorMessage += 'Verifica:\n';
+      errorMessage += '1. El servidor está corriendo\n';
+      errorMessage += '2. La IP es correcta\n';
+      errorMessage += '3. Estás en la misma red WiFi\n';
+      errorMessage += '4. Probaste abrir http://' + ip + ':' + port + ' en el navegador del teléfono';
+
+      Alert.alert('❌ Error de Conexión', errorMessage, [{ text: 'OK' }]);
+    } finally {
+      setTesting(false);
     }
   };
 
-  const SettingItem = ({ icon, title, subtitle, onPress, color = '#2563eb' }) => (
-    <TouchableOpacity style={styles.settingItem} onPress={onPress}>
-      <View style={[styles.iconContainer, { backgroundColor: color + '20' }]}>
-        <Ionicons name={icon} size={24} color={color} />
-      </View>
-      <View style={styles.textContainer}>
-        <Text style={styles.settingTitle}>{title}</Text>
-        {subtitle && <Text style={styles.settingSubtitle}>{subtitle}</Text>}
-      </View>
-      <Ionicons name="chevron-forward" size={24} color="#ccc" />
-    </TouchableOpacity>
-  );
+  const handleSave = async () => {
+    if (!ip.trim()) {
+      Alert.alert('Error', 'Por favor ingresa una dirección IP');
+      return;
+    }
+
+    // Validación básica de formato IP
+    const ipPattern = /^(\d{1,3}\.){3}\d{1,3}$/;
+    if (!ipPattern.test(ip.trim())) {
+      Alert.alert(
+        'Formato Incorrecto',
+        'La IP debe tener el formato:\n192.168.0.1\n\nVerifica y vuelve a intentar.'
+      );
+      return;
+    }
+
+    setLoading(true);
+    try {
+      await setServerUrl(ip, port);
+      Alert.alert(
+        '✅ Configuración Guardada',
+        `Servidor configurado:\nhttp://${ip}:${port}\n\nAhora puedes descargar videos.`,
+        [{ text: 'OK' }]
+      );
+    } catch (error) {
+      Alert.alert('Error', error.message);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   return (
     <ScrollView style={styles.container}>
-      <View style={styles.content}>
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Servidor</Text>
-          
-          <SettingItem
-            icon="server"
-            title="Cambiar IP del Servidor"
-            subtitle={`IP: ${serverIp}`}
-            onPress={() => openModal('ip')}
-            color="#8b5cf6"
-          />
-
-          <SettingItem
-            icon="settings"
-            title="Cambiar Puerto"
-            subtitle={`Puerto: ${serverPort}`}
-            onPress={() => openModal('port')}
-            color="#06b6d4"
-          />
-        </View>
-
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>General</Text>
-          
-          <SettingItem
-            icon="folder-outline"
-            title="Ubicación de Archivos"
-            subtitle="Ver dónde se guardan los videos"
-            onPress={handleCheckStorage}
-            color="#2563eb"
-          />
-
-          <SettingItem
-            icon="trash-outline"
-            title="Limpiar Historial"
-            subtitle="Eliminar todo el historial de descargas"
-            onPress={handleClearHistory}
-            color="#ef4444"
-          />
-        </View>
-
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Acerca de</Text>
-          
-          <View style={styles.infoCard}>
-            <Ionicons name="information-circle" size={40} color="#2563eb" />
-            <Text style={styles.appName}>Descarga YTAPP</Text>
-            <Text style={styles.version}>Versión 1.0.0</Text>
-            <Text style={styles.description}>
-              Aplicación hecha para la clase de desarrollo de aplicaciones para dispositivos moviles.
-            </Text>
-          </View>
-        </View>
-
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Información Importante</Text>
-          
-          <View style={styles.warningCard}>
-            <Ionicons name="warning" size={24} color="#f59e0b" />
-            <Text style={styles.warningText}>
-              Aplicacion hecha por Aaronselo.
-            </Text>
-          </View>
-        </View>
+      <View style={styles.header}>
+        <Ionicons name="settings" size={50} color="#8b5cf6" />
+        <Text style={styles.title}>Configuración del Servidor</Text>
       </View>
 
-      {/* Modal para cambiar IP o Puerto */}
-      <Modal
-        visible={modalVisible}
-        transparent={true}
-        animationType="slide"
-      >
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>
-              {inputType === 'ip' ? 'Cambiar IP del Servidor' : 'Cambiar Puerto'}
-            </Text>
-            <Text style={styles.modalSubtitle}>
-              {inputType === 'ip' 
-                ? 'Ingresa la IP (ej: 192.168.1.74)' 
-                : 'Ingresa el puerto (ej: 3000)'}
-            </Text>
-
-            <TextInput
-              style={styles.modalInput}
-              placeholder={inputType === 'ip' ? '192.168.1.74' : '3000'}
-              value={inputValue}
-              onChangeText={setInputValue}
-              keyboardType={inputType === 'ip' ? 'default' : 'number-pad'}
-            />
-
-            <View style={styles.modalButtons}>
-              <TouchableOpacity
-                style={[styles.modalButton, styles.cancelButton]}
-                onPress={() => setModalVisible(false)}
-              >
-                <Text style={styles.cancelButtonText}>Cancelar</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={[styles.modalButton, styles.saveButton]}
-                onPress={handleSave}
-              >
-                <Text style={styles.saveButtonText}>Guardar</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
+      {/* INSTRUCCIONES CLARAS */}
+      <View style={styles.instructionsCard}>
+        <Text style={styles.instructionsTitle}>📋 Instrucciones:</Text>
+        
+        <Text style={styles.instructionStep}>
+          1. En tu PC, abre CMD o PowerShell:
+        </Text>
+        <View style={styles.codeBlock}>
+          <Text style={styles.codeText}>Windows + R → cmd → Enter</Text>
         </View>
-      </Modal>
+
+        <Text style={styles.instructionStep}>
+          2. Ejecuta este comando para ver tu IP:
+        </Text>
+        <View style={styles.codeBlock}>
+          <Text style={styles.codeText}>ipconfig</Text>
+        </View>
+
+        <Text style={styles.instructionStep}>
+          3. Busca "Adaptador de LAN inalámbrica" o "Ethernet":
+        </Text>
+        <View style={styles.codeBlock}>
+          <Text style={styles.highlightText}>
+            Dirección IPv4: 192.168.X.X
+          </Text>
+          <Text style={styles.codeText}>Copia solo: 192.168.X.X</Text>
+        </View>
+
+        <Text style={styles.instructionStep}>
+          4. Inicia el servidor en tu PC:
+        </Text>
+        <View style={styles.codeBlock}>
+          <Text style={styles.codeText}>cd servidor</Text>
+          <Text style={styles.codeText}>npm start</Text>
+        </View>
+
+        <Text style={styles.instructionStep}>
+          5. Pega la IP abajo y presiona "Probar Conexión"
+        </Text>
+
+        <Text style={styles.instructionStep}>
+          6. Si funciona, presiona "Guardar"
+        </Text>
+      </View>
+
+      {/* FORMULARIO */}
+      <View style={styles.formCard}>
+        <Text style={styles.label}>Dirección IP del Servidor:</Text>
+        <TextInput
+          style={styles.input}
+          value={ip}
+          onChangeText={setIp}
+          placeholder="Ejemplo: 192.168.0.59"
+          placeholderTextColor="#666"
+          keyboardType="numeric"
+          autoCapitalize="none"
+          autoCorrect={false}
+        />
+
+        <Text style={styles.label}>Puerto:</Text>
+        <TextInput
+          style={styles.input}
+          value={port}
+          onChangeText={setPort}
+          placeholder="3000"
+          placeholderTextColor="#666"
+          keyboardType="numeric"
+          editable={false}
+        />
+
+        <Text style={styles.resultUrl}>
+          {ip ? `http://${ip}:${port}` : 'http://___.___.___.___.___:3000'}
+        </Text>
+      </View>
+
+      {/* BOTONES */}
+      <View style={styles.buttonsContainer}>
+        <TouchableOpacity
+          style={[styles.button, styles.testButton]}
+          onPress={testConnection}
+          disabled={testing || !ip}
+        >
+          {testing ? (
+            <ActivityIndicator color="#fff" />
+          ) : (
+            <>
+              <Ionicons name="wifi" size={20} color="#fff" />
+              <Text style={styles.buttonText}>Probar Conexión</Text>
+            </>
+          )}
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.button, styles.saveButton]}
+          onPress={handleSave}
+          disabled={loading || !ip}
+        >
+          {loading ? (
+            <ActivityIndicator color="#fff" />
+          ) : (
+            <>
+              <Ionicons name="save" size={20} color="#fff" />
+              <Text style={styles.buttonText}>Guardar Configuración</Text>
+            </>
+          )}
+        </TouchableOpacity>
+      </View>
+
+      {/* TIPS */}
+      <View style={styles.tipsCard}>
+        <Text style={styles.tipsTitle}>💡 Tips:</Text>
+        <Text style={styles.tipText}>
+          • Usa el comando "ipconfig" en Windows para ver tu IP
+        </Text>
+        <Text style={styles.tipText}>
+          • Tu PC y tu teléfono deben estar en la misma red WiFi
+        </Text>
+        <Text style={styles.tipText}>
+          • NO uses localhost o 127.0.0.1 (no funciona)
+        </Text>
+        <Text style={styles.tipText}>
+          • La IP debe tener formato: 192.168.X.X
+        </Text>
+        <Text style={styles.tipText}>
+          • Si cambias de red, actualiza la IP aquí
+        </Text>
+        <Text style={styles.tipText}>
+          • Los cambios se aplican al volver a la pestaña Inicio
+        </Text>
+      </View>
+
+      {/* FOOTER */}
+      <View style={styles.footer}>
+        <Text style={styles.version}>DescargaYT v1.0.0</Text>
+        <Text style={styles.credits}>Proyecto Escolar - Grupo 7A6</Text>
+      </View>
     </ScrollView>
   );
 }
@@ -236,156 +274,134 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#1a0033',
   },
-  content: {
-    padding: 15,
+  header: {
+    alignItems: 'center',
+    paddingVertical: 30,
   },
-  section: {
-    marginBottom: 25,
+  title: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    color: '#fff',
+    marginTop: 10,
   },
-  sectionTitle: {
+  instructionsCard: {
+    backgroundColor: '#2d1b4e',
+    margin: 15,
+    padding: 20,
+    borderRadius: 15,
+    borderWidth: 1,
+    borderColor: '#8b5cf6',
+  },
+  instructionsTitle: {
     fontSize: 18,
     fontWeight: 'bold',
-    color: '#ffffffff',
+    color: '#fff',
     marginBottom: 15,
-    marginLeft: 5,
   },
-  settingItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#fff',
-    padding: 15,
-    borderRadius: 10,
-    marginBottom: 10,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.1,
-    shadowRadius: 2,
-    elevation: 2,
-  },
-  iconContainer: {
-    width: 50,
-    height: 50,
-    borderRadius: 25,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginRight: 15,
-  },
-  textContainer: {
-    flex: 1,
-  },
-  settingTitle: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#333',
-    marginBottom: 3,
-  },
-  settingSubtitle: {
-    fontSize: 13,
-    color: '#666',
-  },
-  infoCard: {
-    backgroundColor: '#fff',
-    padding: 30,
-    borderRadius: 10,
-    alignItems: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 3,
-  },
-  appName: {
-    fontSize: 20,
-    fontWeight: 'bold',
-    color: '#333',
-    marginTop: 15,
-  },
-  version: {
+  instructionStep: {
     fontSize: 14,
-    color: '#666',
+    color: '#fff',
+    marginTop: 10,
+    marginBottom: 5,
+  },
+  codeBlock: {
+    backgroundColor: '#1a0033',
+    padding: 10,
+    borderRadius: 8,
+    marginVertical: 5,
+  },
+  codeText: {
+    fontFamily: 'monospace',
+    fontSize: 12,
+    color: '#8b5cf6',
+  },
+  highlightText: {
+    fontFamily: 'monospace',
+    fontSize: 12,
+    color: '#22d3ee',
     marginTop: 5,
   },
-  description: {
-    fontSize: 14,
-    color: '#666',
-    textAlign: 'center',
-    marginTop: 15,
-    lineHeight: 20,
+  formCard: {
+    backgroundColor: '#2d1b4e',
+    margin: 15,
+    padding: 20,
+    borderRadius: 15,
   },
-  warningCard: {
-    backgroundColor: '#fef3c7',
+  label: {
+    color: '#fff',
+    fontSize: 16,
+    marginBottom: 8,
+    fontWeight: '600',
+  },
+  input: {
+    backgroundColor: '#1a0033',
+    color: '#fff',
     padding: 15,
     borderRadius: 10,
+    fontSize: 16,
+    marginBottom: 15,
+    borderWidth: 1,
+    borderColor: '#8b5cf6',
+  },
+  resultUrl: {
+    color: '#22d3ee',
+    fontSize: 14,
+    textAlign: 'center',
+    marginTop: 10,
+    fontFamily: 'monospace',
+  },
+  buttonsContainer: {
+    marginHorizontal: 15,
+  },
+  button: {
     flexDirection: 'row',
     alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#fbbf24',
-  },
-  warningText: {
-    flex: 1,
-    fontSize: 13,
-    color: '#78350f',
-    marginLeft: 10,
-    lineHeight: 18,
-  },
-
-  // Modal styles
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.7)',
-    justifyContent: 'flex-end',
-  },
-  modalContent: {
-    backgroundColor: '#fff',
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-    padding: 25,
-    paddingBottom: 40,
-  },
-  modalTitle: {
-    fontSize: 20,
-    fontWeight: 'bold',
-    color: '#333',
+    justifyContent: 'center',
+    padding: 15,
+    borderRadius: 10,
     marginBottom: 10,
   },
-  modalSubtitle: {
-    fontSize: 14,
-    color: '#666',
-    marginBottom: 20,
-  },
-  modalInput: {
-    borderWidth: 1,
-    borderColor: '#ddd',
-    borderRadius: 10,
-    padding: 15,
-    fontSize: 16,
-    marginBottom: 20,
-    backgroundColor: '#f9f9f9',
-  },
-  modalButtons: {
-    flexDirection: 'row',
-    gap: 10,
-  },
-  modalButton: {
-    flex: 1,
-    padding: 15,
-    borderRadius: 10,
-    alignItems: 'center',
-  },
-  cancelButton: {
-    backgroundColor: '#e5e7eb',
-  },
-  cancelButtonText: {
-    color: '#333',
-    fontWeight: '600',
-    fontSize: 16,
+  testButton: {
+    backgroundColor: '#3b82f6',
   },
   saveButton: {
     backgroundColor: '#8b5cf6',
   },
-  saveButtonText: {
+  buttonText: {
     color: '#fff',
-    fontWeight: '600',
     fontSize: 16,
+    fontWeight: 'bold',
+    marginLeft: 8,
+  },
+  tipsCard: {
+    backgroundColor: '#2d1b4e',
+    margin: 15,
+    padding: 20,
+    borderRadius: 15,
+  },
+  tipsTitle: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#fff',
+    marginBottom: 10,
+  },
+  tipText: {
+    color: '#ccc',
+    fontSize: 14,
+    marginVertical: 3,
+  },
+  footer: {
+    alignItems: 'center',
+    paddingVertical: 20,
+    marginBottom: 20,
+  },
+  version: {
+    color: '#888',
+    fontSize: 12,
+  },
+  credits: {
+    color: '#666',
+    fontSize: 10,
+    marginTop: 5,
   },
 });

@@ -1,6 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-const DEFAULT_IP = '192.168.1.74';
+// ⚠️ NO hay IP por defecto - el usuario DEBE configurarla
 const DEFAULT_PORT = '3000';
 const CONFIG_KEY = 'server_config';
 
@@ -11,11 +11,11 @@ export const getServerUrl = async () => {
       const { ip, port } = JSON.parse(config);
       return `http://${ip}:${port}`;
     }
-    // Si no existe configuración, devolver la default
-    return `http://${DEFAULT_IP}:${DEFAULT_PORT}`;
+    // Sin configuración - retorna null para forzar configuración
+    return null;
   } catch (error) {
     console.error('Error al obtener URL del servidor:', error);
-    return `http://${DEFAULT_IP}:${DEFAULT_PORT}`;
+    return null;
   }
 };
 
@@ -24,6 +24,12 @@ export const setServerUrl = async (ip, port = DEFAULT_PORT) => {
     // Validar que la IP tenga formato correcto
     if (!ip || ip.trim() === '') {
       throw new Error('IP no puede estar vacía');
+    }
+
+    // Validación básica de formato IP
+    const ipPattern = /^(\d{1,3}\.){3}\d{1,3}$/;
+    if (!ipPattern.test(ip.trim())) {
+      throw new Error('Formato de IP inválido. Use formato: 192.168.0.1');
     }
 
     const config = { ip: ip.trim(), port };
@@ -42,17 +48,27 @@ export const getServerConfig = async () => {
     if (config) {
       return JSON.parse(config);
     }
-    return { ip: DEFAULT_IP, port: DEFAULT_PORT };
+    // Sin configuración previa
+    return null;
   } catch (error) {
     console.error('Error al obtener configuración:', error);
-    return { ip: DEFAULT_IP, port: DEFAULT_PORT };
+    return null;
+  }
+};
+
+export const hasServerConfig = async () => {
+  try {
+    const config = await AsyncStorage.getItem(CONFIG_KEY);
+    return config !== null;
+  } catch (error) {
+    return false;
   }
 };
 
 export const resetToDefault = async () => {
   try {
     await AsyncStorage.removeItem(CONFIG_KEY);
-    console.log('✅ Configuración reseteada a valores por defecto');
+    console.log('✅ Configuración eliminada');
     return true;
   } catch (error) {
     console.error('Error al resetear configuración:', error);
